@@ -379,6 +379,37 @@ juega un orden de magnitud. En los pixeles transparentes, nada. Si alguna vez se
 cuadros, el orden para revisar es: cuántas instancias hay corriendo, qué está animando y a
 qué frecuencia, y recién al final el tamaño de la fuente.
 
+### La laptop que corre esto
+
+Es una **HP 15-ef1018la**: Ryzen 5 4500U (6 núcleos, 15 W), 16 GB DDR4-2666 en 2 módulos
+(doble canal), Radeon Vega 6 integrada, SSD NVMe de 256 GB. Es la misma laptop que corre el
+GC de foco.cl en el mismo evento.
+
+Analizado el 2026-09-03: la duda era si el HTML era muy pesado y convenía cambiarlo por un
+video con alpha o por PNG encima. **No y no.** El costo no es el HTML, es tener una
+instancia de CEF viva por Browser Source, anime o no. Un video con alpha sería peor:
+decodifica en CPU para siempre —el mismo recurso que pelea con el encoder— y aun así
+necesitaría un Browser Source encima para la hora y el clima.
+
+Lo que sí decide si aguanta, en orden:
+
+1. **Encoder AMD HW H.264, nunca x264.** El 4500U es Renoir con VCN 2.1 (encoder por
+   hardware). Si esa opción no aparece en OBS es driver viejo de HP.
+2. **Recortar cada Browser Source a su tamaño real.** La Vega 6 no tiene VRAM propia, usa
+   la RAM del sistema y esa banda la comparten CPU, compositing, sources y encoder. Por
+   eso el análisis de más arriba de si vale la pena recortar la Browser Source a 1920×220
+   (no vale, ver esa sección) se hizo con esto en mente.
+3. **Apagar la previa de OBS y no usar Modo Estudio.** Con el proyector en el monitor HDMI
+   no se pierde monitoreo.
+4. **Térmica.** Chasis plástico y 15 W: enchufada, máximo rendimiento, superficie dura.
+
+Estimado con las cuatro gráficas del torneo (franja, comentarios, mosca e info de
+partidos) puestas a la vez: CPU 25-40%, GPU con holgura, RAM sin problema. Los riesgos de
+caída de verdad no son el peso de estos archivos: el SSD llenándose si se graba (~4,5
+GB/hora a 1080p30), los dos USB de captura compartiendo controlador (cortes de audio), y
+un reinicio del driver AMD por el proyector a pantalla completa junto con la aceleración
+por hardware de las Browser Sources — se mitiga con el proyector en ventana.
+
 Si alguna vez hace falta la fuente acotada, los números están medidos. La franja **no usa
 el alto para nada**: la escala sale solo del ancho (`html { font-size: calc(100vw / 120) }`,
 o sea 1rem = 16 px a 1920) y la caja está anclada por `bottom: 3.5rem`. Alto de más queda
@@ -711,10 +742,14 @@ colaboración de"**: "cortesía de" suena a traducción del inglés, y además p
 nombrar lo que donaron. Ningún rótulo lleva dos puntos al final. El municipio presta el espacio, un par de empresas
   donaron premios y el streaming lo pone la casa: nadie aportó dinero, así que "Auspician"
   quedaba grande y "Colaboran" quedaba vago. Cada tanda dice lo que corresponde.
-- **Las fuentes son las del sistema.** Al integrar al GC hay que enganchar
-  `gc/css/fuentes.css` y ganamos Outfit/Mulish incrustadas en base64.
-- **Si esto entra al GC**, ojo con el nombre: el GC ya tiene un `cintillo` propio (el
-  ticker de mensajes rotativos de `estado.js`). Esta gráfica es otra cosa y necesita otro
-  nombre. Sigue pendiente la decisión de `../cintillo-sede/LEEME.md` sobre reutilizar el
-  `lower` o crear un tipo de gráfica nuevo — y ahí vale que los dos paneles comparten
-  `panel.js` sin guardas, así que hay que correr `taller/scripts/verificar-paneles.ps1`.
+- **`comentarios.html` y los originales (`cintillo-sede.html`, `reloj-clima.html`) siguen
+  con las fuentes del sistema.** `franja-inferior.html` ya las lleva incrustadas en base64
+  (Outfit/Mulish). Si se quiere el mismo blindaje en `comentarios.html`, hay que volver a
+  copiarlas a mano — desde el 2026-09-04 este proyecto y el GC de foco.cl son dos repos
+  separados (`gc-bicipolo` y `gc-overlays`), así que ya no hay una carpeta `gc/` común de
+  la que tirar.
+- **La integración con el GC de foco.cl queda descartada por ahora.** Este proyecto se
+  separó de ese repo el 2026-09-04 y vive solo, como páginas HTML sueltas que no hablan
+  con `panel.js`, `estado.js` ni `canal.js`. La pregunta que quedaba abierta en
+  `../cintillo-sede/LEEME.md` —reutilizar el `lower` del GC o crear un tipo de gráfica
+  nuevo— ya no aplica salvo que en algún momento se decida volver a unir los proyectos.

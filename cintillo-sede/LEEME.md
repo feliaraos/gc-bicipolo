@@ -1,8 +1,13 @@
 # cintillo-sede — franja inferior con la sede de la transmisión
 
-Gráfica en desarrollo. **Todavía no es una gráfica del GC**: es una página suelta, autocontenida,
-con su propia paleta. Está en `taller/` justamente por eso — no se necesita para transmitir y no
-tiene por qué viajar en el pendrive con `gc/`.
+**Ya no se desarrolla acá.** El 2026-09-02 se fusionó con `reloj-clima.html` en
+`../horayclima/franja-inferior.html`, que es la gráfica viva (ver `../horayclima/CONTEXTO.md`).
+Este archivo queda como original de referencia, porque sus comentarios explican por qué esta
+mitad de la franja está hecha así — ya viajaron completos a la fusión.
+
+Lo de abajo describe el estado en que quedó antes de fusionarse y sigue valiendo como historia,
+pero las decisiones pendientes que menciona (paleta, integración con un panel) están resueltas
+o descartadas: ver la nota al final.
 
 ## De dónde viene
 
@@ -38,6 +43,14 @@ query string. Lo natural acá sería que los escriba el operador desde el panel.
   `panel.js` sin guardas, así que hay que correr `taller/scripts/verificar-paneles.ps1`.
 
 Cuando quede resuelto, la gráfica se muda a `gc/` y esta carpeta desaparece.
+
+**Cómo quedó resuelto de verdad:** ninguna de las dos formas de arriba. `franja-inferior.html`
+no adoptó las variables del GC ni el `emerald-400` de BPT1: usa la paleta propia del torneo
+(rojo `#ED1F24`, crema `#f2eee3`, azul marino `#16203f`, ver `../horayclima/CONTEXTO.md`). Y la
+pregunta de standalone-vs-panel quedó sin objeto: el 2026-09-04 este proyecto se separó del
+repo del GC de foco.cl y vive solo, en `github.com/feliaraos/gc-bicipolo`, como páginas HTML
+sueltas sin panel ni `estado.js`. Esta carpeta no desaparece — queda como referencia histórica
+de la franja de sede original.
 
 ## Cosas que ya se aprendieron, para no volver a descubrirlas
 
