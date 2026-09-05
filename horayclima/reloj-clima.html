@@ -1,0 +1,483 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Reloj y temperatura</title>
+
+<!-- Adelanta el DNS y el handshake TLS apenas se abre la pagina, sin esperar a
+     que corra el script. Es lo que recorta el "se demoro unos segundos" de la
+     primera consulta: cuando el fetch sale, la conexion ya esta hecha. -->
+<link rel="preconnect" href="https://api.open-meteo.com" crossorigin>
+
+<style>
+/* reloj-clima.html — hora local + temperatura + ubicacion, en un solo archivo.
+ *
+ * Archivo suelto a proposito: no depende de servidor, ni de build, ni de nada
+ * del GC ni de torneos.bikepolo.cl. Se arrastra a OBS como Browser Source
+ * (Local file) y funciona.
+ *
+ * Dos reglas heredadas de los otros overlays:
+ *   1. html y body con background transparent !important, o OBS pinta un
+ *      rectangulo gris encima de la camara.
+ *   2. Animar solo opacity y transform, que las resuelve la GPU sin rehacer
+ *      layout. Nada de animar width, top ni filter mientras el PC codifica.
+ */
+
+/* Lienzo de referencia 1920 px de ancho: ahi 1rem = 16 px. Con todo en rem la
+   grafica se escala sola si la Browser Source usa otra resolucion. */
+html {
+  font-size: calc(100vw / 120);
+  background: transparent !important;
+}
+
+body {
+  margin: 0;
+  height: 100vh;
+  overflow: hidden;
+  background: transparent !important;
+  font-family: var(--rc-cuerpo);
+  -webkit-font-smoothing: antialiased;
+}
+
+:root {
+  --rc-acento: #2e35ff;
+  --rc-fondo: rgba(20, 23, 31, .90);
+  --rc-texto: #ffffff;
+  --rc-texto-2: #b9c0cc;
+  --rc-radio: 4px;
+  --rc-titulo: 'Mulish', system-ui, sans-serif;
+  --rc-cuerpo: 'Mulish', system-ui, sans-serif;
+
+  /* Colores de los iconos. Van aparte del texto a proposito: sobre camara en
+     vivo, un sol amarillo y una nube blanca se distinguen al vuelo; los mismos
+     dos dibujos en un solo color se leen como una mancha. */
+  --rc-sol:  #ffc247;
+  --rc-luna: #ffe6a3;
+  --rc-nube: #e8edf5;
+  --rc-agua: #7ec8ff;
+}
+
+#caja {
+  position: absolute;
+  top: 3rem;
+  right: 3rem;
+  display: flex;
+  align-items: stretch;
+  background: var(--rc-fondo);
+  border-radius: var(--rc-radio);
+  box-shadow: 0 .75rem 2.5rem rgba(0, 0, 0, .38);
+  overflow: hidden;
+  opacity: 0;
+  transform: translateY(-1rem);
+  transition: opacity .3s ease, transform .42s cubic-bezier(.16, .86, .3, 1);
+  will-change: transform, opacity;
+}
+#caja.dentro {
+  opacity: 1;
+  transform: none;
+}
+
+/* Posiciones alternativas, via ?pos= */
+#caja.abajo-der { top: auto; bottom: 3rem; transform: translateY(1rem); }
+#caja.abajo-izq { top: auto; bottom: 3rem; right: auto; left: 3rem; transform: translateY(1rem); }
+#caja.arriba-izq { right: auto; left: 3rem; }
+#caja.abajo-der.dentro,
+#caja.abajo-izq.dentro,
+#caja.arriba-izq.dentro { transform: none; }
+
+.barra {
+  flex: 0 0 .4rem;
+  background: var(--rc-acento);
+}
+
+.cuerpo {
+  padding: .9rem 1.6rem 1rem;
+}
+
+/* ---------- Fila de arriba: hora | icono + temperatura ---------- */
+
+.fila {
+  display: flex;
+  align-items: center;
+  gap: 1.4rem;
+}
+
+.hora,
+.temp {
+  font-family: var(--rc-titulo);
+  font-weight: 700;
+  font-size: 2.4rem;
+  line-height: 1;
+  letter-spacing: -.01em;
+  color: var(--rc-texto);
+  font-variant-numeric: tabular-nums;   /* los digitos no bailan al cambiar */
+}
+
+/* El bloque de clima parte oculto y solo aparece cuando hay un dato real: al
+   aire nunca se ve un "--" ni un cartel de error. */
+#clima {
+  display: none;
+  align-items: center;
+  gap: .7rem;
+  padding-left: 1.4rem;
+  border-left: 1px solid rgba(255, 255, 255, .14);
+}
+#clima.hay-dato { display: flex; }
+
+/* Dato viejo (la ultima consulta fallo): se atenua un poco, sin desaparecer.
+   Es una senal para el operador, no para el publico. */
+#clima.rancio { opacity: .72; }
+
+.icono {
+  width: 2.9rem;
+  height: 2.9rem;
+  flex: 0 0 auto;
+  display: block;
+}
+.icono svg { width: 100%; height: 100%; display: block; }
+
+/* ---------- Pie: condicion y ubicacion ---------- */
+
+.pie {
+  margin-top: .6rem;
+  padding-top: .55rem;
+  border-top: 1px solid rgba(255, 255, 255, .14);
+  font-family: var(--rc-cuerpo);
+  font-weight: 400;
+  font-size: 1.05rem;
+  line-height: 1.25;
+  color: var(--rc-texto-2);
+  white-space: nowrap;
+}
+.pie:empty {
+  display: none;
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+</style>
+</head>
+<body>
+
+<div id="caja">
+  <div class="barra"></div>
+
+  <div class="cuerpo">
+    <div class="fila">
+      <div class="hora" id="hora">--:--</div>
+      <div id="clima">
+        <div class="icono" id="icono"></div>
+        <div class="temp" id="temp"></div>
+      </div>
+    </div>
+    <div class="pie" id="pie"></div>
+  </div>
+</div>
+
+<script>
+/* Script clasico, sin type="module": Chromium bloquea los modulos ES cargados
+   desde file://, que es como los abre la Browser Source de OBS. */
+(function () {
+  'use strict';
+
+  /* ---------- Configuracion ----------
+   *
+   * Todo se puede cambiar por querystring en la URL de la Browser Source, sin
+   * tocar el archivo. Ejemplo:
+   *   reloj-clima.html?lugar=Independencia,%20Santiago&pos=abajo-izq
+   *
+   * Los valores de aca abajo son el default si no viene nada en la URL. */
+  var q = new URLSearchParams(location.search);
+
+  var CFG = {
+    lat:      parseFloat(q.get('lat')) || -33.4172,           // comuna de Independencia
+    lon:      parseFloat(q.get('lon')) || -70.6647,
+    tz:       q.get('tz') || 'America/Santiago',              // explicita: no depende de la hora del PC
+    lugar:    q.get('lugar') !== null ? q.get('lugar') : 'Independencia, Santiago',
+    pos:      q.get('pos') || '',                             // abajo-der | abajo-izq | arriba-izq
+    seg:      q.get('seg') === '1',                           // mostrar segundos
+    fecha:    q.get('fecha') === '1',                         // agregar la fecha al pie
+    cond:     q.get('cond') !== '0',                          // agregar la condicion al pie
+    clima:    q.get('clima') !== '0',                         // apagar el bloque de temperatura
+    minutos:  parseInt(q.get('cada'), 10) || 10               // cada cuanto se pide la temperatura
+  };
+
+  var elHora  = document.getElementById('hora');
+  var elTemp  = document.getElementById('temp');
+  var elIcono = document.getElementById('icono');
+  var elClima = document.getElementById('clima');
+  var elPie   = document.getElementById('pie');
+  var caja    = document.getElementById('caja');
+
+  if (CFG.pos) caja.classList.add(CFG.pos);
+
+  /* ---------- Hora ----------
+   *
+   * Sale del reloj del PC, pero formateada con timeZone explicita. Asi, si el
+   * notebook de transmision quedo con la zona horaria equivocada (pasa), al
+   * aire igual sale la hora de Chile, con el cambio de horario de verano
+   * resuelto por el navegador. */
+  var fmtHora = new Intl.DateTimeFormat('es-CL', {
+    timeZone: CFG.tz,
+    hour: '2-digit',
+    minute: '2-digit',
+    second: CFG.seg ? '2-digit' : undefined,
+    hour12: false
+  });
+
+  var fmtFecha = new Intl.DateTimeFormat('es-CL', {
+    timeZone: CFG.tz,
+    weekday: 'long',
+    day: 'numeric',
+    month: 'long'
+  });
+
+  function pintarHora() {
+    elHora.textContent = fmtHora.format(new Date());
+  }
+
+  /* Se repinta cada segundo aunque no se muestren segundos: es una escritura de
+   * texto por segundo, cuesta nada, y evita que el minuto cambie con hasta 59 s
+   * de atraso al aire. */
+  pintarHora();
+  setInterval(pintarHora, 1000);
+
+  /* ---------- Iconos ----------
+   *
+   * SVG escrito a mano aca adentro: nada de una libreria de iconos por CDN, que
+   * desde file:// no cargaria, y que ademas seria una dependencia de red mas
+   * que puede fallar justo al aire.
+   *
+   * Las nubes se arman con circulos y un rectangulo redondeado en vez de una
+   * curva bezier: se fusionan en una silueta solida y limpia a cualquier
+   * tamano, sin depender de que un path complicado quede bien.
+   */
+  var SVG_INI = '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">';
+
+  /* Nube solida, desplazable, para componerla con el sol o la luna. */
+  function nube(dx, dy, esc, color) {
+    var g = '<g transform="translate(' + dx + ',' + dy + ') scale(' + esc + ')" fill="' + color + '">';
+    g += '<circle cx="9" cy="13.2" r="3.5"/>';
+    g += '<circle cx="14.2" cy="11.8" r="4.4"/>';
+    g += '<circle cx="18" cy="14.6" r="3"/>';
+    g += '<rect x="5.5" y="14" width="15.5" height="5" rx="2.5"/>';
+    return g + '</g>';
+  }
+
+  /* Sol con rayos. cx/cy/r definen el disco; los rayos salen a 45 grados. */
+  function sol(cx, cy, r) {
+    var s = '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="var(--rc-sol)"/>';
+    s += '<g stroke="var(--rc-sol)" stroke-width="1.7" stroke-linecap="round">';
+    var d1 = r + 1.6, d2 = r + 3.6;
+    for (var i = 0; i < 8; i++) {
+      var a = i * Math.PI / 4;
+      var ux = Math.cos(a), uy = Math.sin(a);
+      s += '<line x1="' + (cx + ux * d1).toFixed(2) + '" y1="' + (cy + uy * d1).toFixed(2) +
+           '" x2="' + (cx + ux * d2).toFixed(2) + '" y2="' + (cy + uy * d2).toFixed(2) + '"/>';
+    }
+    return s + '</g>';
+  }
+
+  /* Luna creciente: un disco al que se le resta otro corrido, con mask, para
+     que el borde interno quede parejo. */
+  function luna(cx, cy, r) {
+    var id = 'ml';
+    return '<defs><mask id="' + id + '">' +
+             '<rect width="24" height="24" fill="#fff"/>' +
+             '<circle cx="' + (cx + r * .62) + '" cy="' + (cy - r * .52) + '" r="' + (r * .92) + '" fill="#000"/>' +
+           '</mask></defs>' +
+           '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="var(--rc-luna)" mask="url(#' + id + ')"/>';
+  }
+
+  /* Gotas / copos / rayo que cuelgan bajo una nube. */
+  function gotas() {
+    return '<g stroke="var(--rc-agua)" stroke-width="1.9" stroke-linecap="round">' +
+           '<line x1="9.5" y1="19.5" x2="8.3" y2="22"/>' +
+           '<line x1="13.5" y1="19.5" x2="12.3" y2="22"/>' +
+           '<line x1="17.5" y1="19.5" x2="16.3" y2="22"/></g>';
+  }
+  function copos() {
+    return '<g stroke="var(--rc-nube)" stroke-width="1.7" stroke-linecap="round">' +
+           '<line x1="9" y1="20" x2="9" y2="22.4"/><line x1="7.9" y1="20.6" x2="10.1" y2="21.8"/>' +
+           '<line x1="10.1" y1="20.6" x2="7.9" y2="21.8"/>' +
+           '<line x1="15" y1="20" x2="15" y2="22.4"/><line x1="13.9" y1="20.6" x2="16.1" y2="21.8"/>' +
+           '<line x1="16.1" y1="20.6" x2="13.9" y2="21.8"/></g>';
+  }
+  function rayo() {
+    return '<path d="M13.6 18.2l-3.9 0 2.7 2.1-1.5 3.2 4.6-3.6-2.6 0 1.9-1.7z" fill="var(--rc-sol)"/>';
+  }
+  function niebla() {
+    return '<g stroke="var(--rc-nube)" stroke-width="1.9" stroke-linecap="round">' +
+           '<line x1="4" y1="9" x2="20" y2="9"/><line x1="6" y1="13" x2="18.5" y2="13"/>' +
+           '<line x1="4.5" y1="17" x2="19" y2="17"/><line x1="7" y1="21" x2="17" y2="21"/></g>';
+  }
+
+  /* Familias de dibujo. La nube va despues del sol en el marcado para quedar
+     encima; se distinguen por color, no por orden. */
+  var DIBUJO = {
+    despejado: function (dia) {
+      return dia ? sol(12, 12, 4.6) : luna(12, 12, 6.4);
+    },
+    parcial: function (dia) {
+      var astro = dia ? sol(9, 8, 3.3) : luna(9.5, 8, 4.4);
+      return astro + nube(2.5, 3.2, .82, 'var(--rc-nube)');
+    },
+    nublado: function () {
+      return nube(1.5, 1.5, .95, 'var(--rc-nube)');
+    },
+    lluvia: function () {
+      return nube(1.5, -1.5, .88, 'var(--rc-nube)') + gotas();
+    },
+    nieve: function () {
+      return nube(1.5, -1.5, .88, 'var(--rc-nube)') + copos();
+    },
+    tormenta: function () {
+      return nube(1.5, -2, .88, 'var(--rc-nube)') + rayo();
+    },
+    neblina: function () {
+      return niebla();
+    }
+  };
+
+  /* Codigos WMO -> texto corto + familia de icono. No estan todos, solo los que
+     se ven en Chile. */
+  var WMO = {
+    0:  ['Despejado',           'despejado'],
+    1:  ['Mayormente despejado','despejado'],
+    2:  ['Parcial nublado',     'parcial'],
+    3:  ['Nublado',             'nublado'],
+    45: ['Neblina',             'neblina'],
+    48: ['Neblina',             'neblina'],
+    51: ['Llovizna',            'lluvia'],
+    53: ['Llovizna',            'lluvia'],
+    55: ['Llovizna',            'lluvia'],
+    56: ['Llovizna helada',     'lluvia'],
+    57: ['Llovizna helada',     'lluvia'],
+    61: ['Lluvia',              'lluvia'],
+    63: ['Lluvia',              'lluvia'],
+    65: ['Lluvia fuerte',       'lluvia'],
+    66: ['Lluvia helada',       'lluvia'],
+    67: ['Lluvia helada',       'lluvia'],
+    71: ['Nieve',               'nieve'],
+    73: ['Nieve',               'nieve'],
+    75: ['Nieve intensa',       'nieve'],
+    77: ['Granizo fino',        'nieve'],
+    80: ['Chubascos',           'lluvia'],
+    81: ['Chubascos',           'lluvia'],
+    82: ['Chubascos fuertes',   'lluvia'],
+    85: ['Chubascos de nieve',  'nieve'],
+    86: ['Chubascos de nieve',  'nieve'],
+    95: ['Tormenta',            'tormenta'],
+    96: ['Tormenta con granizo','tormenta'],
+    99: ['Tormenta con granizo','tormenta']
+  };
+
+  /* ---------- Temperatura ----------
+   *
+   * Open-Meteo: sin API key, sin registro, y responde con
+   * access-control-allow-origin: *, que es lo unico que permite consultarla
+   * desde un archivo abierto con file:// (ahi el Origin es "null").
+   * Limite gratis holgado: una consulta cada 10 min son 144 al dia.
+   *
+   * is_day viene en la misma llamada y es lo que decide sol o luna: a las 21:00
+   * de un dia de torneo, un solcito al aire se ve mal.
+   */
+  var URL_BASE = 'https://api.open-meteo.com/v1/forecast';
+  var CACHE = 'rc.clima';
+
+  function pintarPie(condicion) {
+    var partes = [];
+    if (CFG.fecha) {
+      var f = fmtFecha.format(new Date());
+      partes.push(f.charAt(0).toUpperCase() + f.slice(1));
+    }
+    if (CFG.cond && condicion) partes.push(condicion);
+    if (CFG.lugar) partes.push(CFG.lugar);
+    elPie.textContent = partes.join('  ·  ');
+  }
+
+  function mostrarClima(dato, rancio) {
+    var w = WMO[dato.codigo] || ['', 'nublado'];
+    elTemp.textContent = Math.round(dato.temp) + '°';
+    elIcono.innerHTML = SVG_INI + DIBUJO[w[1]](dato.dia !== 0) + '</svg>';
+    elClima.classList.add('hay-dato');
+    elClima.classList.toggle('rancio', !!rancio);
+    pintarPie(w[0]);
+  }
+
+  /* Al arrancar se pinta de inmediato el ultimo valor guardado, para que la
+   * grafica no aparezca a medias mientras responde la red. Si la consulta
+   * falla, este valor se queda al aire en vez de dejar el hueco. */
+  function leerCache() {
+    try {
+      var g = JSON.parse(localStorage.getItem(CACHE) || 'null');
+      /* Mas de 3 horas ya no representa nada: mejor no mostrar temperatura. */
+      if (g && Date.now() - g.t < 3 * 3600 * 1000) return g;
+    } catch (e) { /* localStorage bloqueado: seguimos sin cache */ }
+    return null;
+  }
+
+  function pedirClima() {
+    var url = URL_BASE +
+      '?latitude=' + CFG.lat +
+      '&longitude=' + CFG.lon +
+      '&current=temperature_2m,apparent_temperature,weather_code,is_day' +
+      '&timezone=' + encodeURIComponent(CFG.tz);
+
+    fetch(url, { cache: 'no-store' })
+      .then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      })
+      .then(function (j) {
+        var dato = {
+          temp: j.current.temperature_2m,
+          codigo: j.current.weather_code,
+          dia: j.current.is_day,
+          t: Date.now()
+        };
+        try { localStorage.setItem(CACHE, JSON.stringify(dato)); } catch (e) {}
+        mostrarClima(dato, false);
+        entrar();
+      })
+      .catch(function (err) {
+        /* Nada al aire: solo queda anotado en la consola de la Browser Source
+           y el bloque sigue con el ultimo valor conocido, atenuado. */
+        console.warn('[reloj-clima] no se pudo actualizar la temperatura:', err);
+        var g = leerCache();
+        if (g) mostrarClima(g, true);
+        entrar();
+      });
+  }
+
+  /* ---------- Entrada ----------
+   *
+   * La caja entra una sola vez y ya completa. Esperar el primer clima evita que
+   * al aire se vea el reloj solo y, un segundo despues, la caja creciendo de
+   * golpe al aparecer la temperatura. El tope de 1,5 s es el seguro: si la red
+   * esta caida, la hora sale igual y a tiempo. */
+  var entro = false;
+  function entrar() {
+    if (entro) return;
+    entro = true;
+    requestAnimationFrame(function () {
+      requestAnimationFrame(function () { caja.classList.add('dentro'); });
+    });
+  }
+
+  pintarPie('');
+
+  if (CFG.clima) {
+    var guardado = leerCache();
+    if (guardado) mostrarClima(guardado, true);
+    pedirClima();
+    setInterval(pedirClima, CFG.minutos * 60 * 1000);
+    setTimeout(entrar, 1500);
+  } else {
+    entrar();
+  }
+})();
+</script>
+
+</body>
+</html>
